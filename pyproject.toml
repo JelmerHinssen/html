@@ -1,0 +1,10 @@
+[project]
+name = "html"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0.2",
+    "typeguard>=4.4.4",
+]
