@@ -1,0 +1,11 @@
+☐ Create server broadcasting current state
+☐ Create page that queries the state repeatedly
+☐ Tile selection from circle
+☐ Tile selection from center
+☐ Tile overflow
+☐ End of turn
+    ☐ Tiles to board
+    ☐ Scoring
+☐ Turn order
+☐ Interactive actions via UI
+☐ AI
