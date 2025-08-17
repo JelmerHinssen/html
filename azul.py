@@ -64,6 +64,13 @@ class TileCollection:
                 )
         return children
 
+    def remove_all(self, tile: "Tile"):
+        count = self[tile]
+        if count <= 0:
+            raise ValueError(f"Collection does not have {tile}")
+        self.remove_tile(tile, count)
+        return count
+
 
 @dataclass
 class CenterTileCollection(TileCollection):
@@ -132,7 +139,7 @@ class BuildingLine:
 
 @dataclass
 class FloorLine:
-    tiles: list[Tile]
+    tiles: list[Tile | FirstTile]
 
     def to_html(self, generator: HTMLGenerator) -> HTMLTag:
         children = []
@@ -176,10 +183,17 @@ class Player:
     board: Board
 
     def get_color_from_circle(self, color: Tile, circle: TileCollection, row: int, center: CenterTileCollection):
-        count = circle[color]
-        if count == 0:
+        try:
+            count = circle.remove_all(color)
+        except ValueError:
             raise IllegalAction(f"No {color} on selected circle")
-        circle.remove_tile(color, count)
+        for tile in Tile:
+            left = circle[tile]
+            circle.remove_tile(tile, left)
+            center.add_tile(tile, left)
+        self.add_tiles_to_row(color, row, count)
+
+    def add_tiles_to_row(self, color: Tile, row: int, count: int):
         if row < 0:
             overflow = count
         else:
@@ -191,10 +205,16 @@ class Player:
             line.count += count - overflow
         for _ in range(overflow):
             self.floor_line.tiles.append(color)
-        for tile in Tile:
-            left = circle[tile]
-            center.add_tile(tile, left)
-            circle.remove_tile(tile, left)
+
+    def get_color_from_center(self, color: Tile, row: int, center: CenterTileCollection):
+        try:
+            count = center.remove_all(color)
+        except ValueError:
+            raise IllegalAction(f"No {color} in center")
+        if center.first:
+            self.floor_line.tiles.append(FirstTile.FIRST)
+            center.first = False
+        self.add_tiles_to_row(color, row, count)
 
 
 @dataclass
@@ -229,6 +249,8 @@ def run():
     azul.players[2].get_color_from_circle(Tile.YELLOW, circles[3], 2, center)
     time.sleep(1)
     azul.players[2].get_color_from_circle(Tile.YELLOW, circles[4], 2, center)
+    time.sleep(1)
+    azul.players[0].get_color_from_center(Tile.CYAN, 2, center)
 
 
 def start():
