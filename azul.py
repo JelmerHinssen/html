@@ -1,5 +1,7 @@
 from dataclasses import asdict, field
 import random
+import threading
+import time
 from typing import Optional
 from enum import Enum
 import yaml
@@ -174,7 +176,38 @@ class Azul:
     players: list[Player]
 
 
-def main():
+azul: Azul | None = None
+thread: threading.Thread | None = None
+
+
+def get_state():
+    if not azul:
+        return "<h2>uh oh</h2>"
+    generator = HTMLGenerator()
+    html = generator(azul)
+    html.id = "main"
+    return html.to_html() + f"\n"
+
+
+def run():
+    global azul
+    assert azul is not None
+    time.sleep(1)
+    supply = azul.supply.available
+    azul.players[0].floor_line.tiles.append(supply.take_random_tile())
+
+
+def start():
+    global thread
+    if thread is not None:
+        return ""
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+
+def init():
+    print(f"Initialize azul")
+    global azul
     random.seed(656321)
     azul = Azul(
         Supply(
@@ -190,8 +223,12 @@ def main():
         for _ in range(4):
             circle.add_tile(supply.take_random_tile())
 
-    azul.players[0].floor_line.tiles.append(supply.take_random_tile())
 
+init()
+
+
+def main():
+    init()
     generator = HTMLGenerator()
     html = generator(azul)
     html.id = "main"
