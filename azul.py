@@ -1,9 +1,10 @@
-from dataclasses import field
+from dataclasses import asdict, field
 import random
 from typing import Optional
 from enum import Enum
 import yaml
 
+from tohtml import HTMLGenerator, DOMNode, HTMLTag, TextNode
 from yamlplus import dataclass, yaml_object
 
 
@@ -41,10 +42,30 @@ class TileCollection:
     def add_tile(self, tile: "Tile"):
         setattr(self, tile.name.lower(), getattr(self, tile.name.lower()) + 1)
 
+    def to_html(self, generator: HTMLGenerator) -> list["DOMNode"]:
+        children = []
+        for tile in Tile:
+            count = getattr(self, tile.name.lower())
+            for _ in range(count):
+                children.append(
+                    HTMLTag(
+                        "div",
+                        classes=["tile", f"tile-{tile.name.lower()}"],
+                        children=[TextNode(tile.name.lower())],
+                    )
+                )
+        return children
+
 
 @dataclass
 class CenterTileCollection(TileCollection):
     first: bool = True
+
+    def to_html(self, generator: HTMLGenerator) -> list["DOMNode"]:
+        children = super().to_html(generator)
+        if self.first:
+            children.insert(0, HTMLTag("div", classes=["tile", "tile-first"], children=[TextNode("first")]))
+        return children
 
 
 @dataclass
@@ -53,6 +74,21 @@ class Supply:
     discarded: TileCollection
     center: CenterTileCollection
     circles: list[TileCollection]
+
+    def to_html(self, generator: HTMLGenerator) -> list["DOMNode"]:
+        children = []
+        children.append(
+            generator.merge(HTMLTag("div", classes=["available"]), generator.generate(asdict(self.available)))
+        )
+        children.append(
+            generator.merge(HTMLTag("div", classes=["discarded"]), generator.generate(asdict(self.discarded)))
+        )
+        children.append(HTMLTag("div", classes=["center"], children=self.center.to_html(generator)))
+        circles = HTMLTag("div", classes=["circles"])
+        for circle in self.circles:
+            circles.children.append(HTMLTag("div", classes=["circle"], children=circle.to_html(generator)))
+        children.append(circles)
+        return children
 
 
 @yaml_object
@@ -74,16 +110,41 @@ class BuildingLine:
     tile: Optional[Tile] = None
     count: int = 0
 
+    def to_html(self, generator: HTMLGenerator) -> HTMLTag:
+        children = []
+        for _ in range(5 - self.length):
+            children.append(HTMLTag("div", classes=["tile", "tile-spacer"]))
+        for _ in range(self.length - self.count):
+            children.append(HTMLTag("div", classes=["tile", "tile-empty"]))
+        if self.tile:
+            for _ in range(self.count):
+                children.append(HTMLTag("div", classes=["tile", f"tile-{self.tile.name.lower()}"]))
+        return HTMLTag("div", classes=["buildingline"], children=children)
+
 
 @dataclass
 class FloorLine:
     tiles: list[Tile]
+
+    def to_html(self, generator: HTMLGenerator) -> HTMLTag:
+        children = []
+        for tile in self.tiles:
+            children.append(HTMLTag("div", classes=["tile", f"tile-{tile.name.lower()}"]))
+        for _ in range(7 - len(self.tiles)):
+            children.append(HTMLTag("div", classes=["tile", "tile-empty"]))
+        return HTMLTag("div", children=children)
 
 
 @dataclass
 class TileSpot:
     tile: Tile
     occupied: bool = False
+
+    def to_html(self, generator: HTMLGenerator) -> HTMLTag:
+        classes = ["tile", f"tile-{self.tile.name.lower()}"]
+        if not self.occupied:
+            classes.append("tile-empty")
+        return HTMLTag("div", classes=classes)
 
 
 @dataclass
@@ -131,19 +192,13 @@ def main():
 
     azul.players[0].floor_line.tiles.append(supply.take_random_tile())
 
-    with open("output.txt", "w") as f:
-        f.write(repr(azul))
-    with open("output.yaml", "w") as f:
-        yaml.dump(azul, f, sort_keys=False)
-
-    with open("output.yaml") as f:
-        obj = yaml.load(f, yaml.Loader)
-
-    with open("output2.txt", "w") as f:
-        f.write(repr(obj))
-
-    with open("output2.yaml", "w") as f:
-        yaml.dump(obj, f, sort_keys=False)
+    generator = HTMLGenerator()
+    html = generator(azul)
+    html.id = "main"
+    with open("output.html", "w") as f:
+        f.write(html.to_html())
+        f.write("\n")
+        f.write('<link rel="stylesheet" href="azul.css">\n')
 
 
 if __name__ == "__main__":
