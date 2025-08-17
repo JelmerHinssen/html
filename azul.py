@@ -10,6 +10,9 @@ from tohtml import HTMLGenerator, DOMNode, HTMLTag, TextNode
 from yamlplus import dataclass, yaml_object
 
 
+class IllegalAction(Exception): ...
+
+
 @dataclass
 class TileCollection:
     blue: int = 0
@@ -35,14 +38,17 @@ class TileCollection:
         self.remove_tile(tile)
         return tile
 
-    def remove_tile(self, tile: "Tile"):
+    def remove_tile(self, tile: "Tile", count: int = 1):
         old = getattr(self, tile.name.lower())
-        if old <= 0:
-            raise ValueError(f"Collection does not have {tile}")
-        setattr(self, tile.name.lower(), old - 1)
+        if old < count:
+            raise ValueError(f"Collection does not have {count} {tile}(s)")
+        setattr(self, tile.name.lower(), old - count)
 
-    def add_tile(self, tile: "Tile"):
-        setattr(self, tile.name.lower(), getattr(self, tile.name.lower()) + 1)
+    def add_tile(self, tile: "Tile", count: int = 1):
+        setattr(self, tile.name.lower(), getattr(self, tile.name.lower()) + count)
+
+    def __getitem__(self, tile: "Tile"):
+        return getattr(self, tile.name.lower())
 
     def to_html(self, generator: HTMLGenerator) -> list["DOMNode"]:
         children = []
@@ -169,6 +175,27 @@ class Player:
     floor_line: FloorLine
     board: Board
 
+    def get_color_from_circle(self, color: Tile, circle: TileCollection, row: int, center: CenterTileCollection):
+        count = circle[color]
+        if count == 0:
+            raise IllegalAction(f"No {color} on selected circle")
+        circle.remove_tile(color, count)
+        if row < 0:
+            overflow = count
+        else:
+            line = self.building_lines[row]
+            if line.tile is not None and line.tile is not color:
+                raise IllegalAction(f"Cannot add {color} to line of {line.tile}")
+            line.tile = color
+            overflow = max(0, line.count + count - line.length)
+            line.count += count - overflow
+        for _ in range(overflow):
+            self.floor_line.tiles.append(color)
+        for tile in Tile:
+            left = circle[tile]
+            center.add_tile(tile, left)
+            circle.remove_tile(tile, left)
+
 
 @dataclass
 class Azul:
@@ -192,9 +219,16 @@ def get_state():
 def run():
     global azul
     assert azul is not None
+    circles = azul.supply.circles
+    center = azul.supply.center
     time.sleep(1)
-    supply = azul.supply.available
-    azul.players[0].floor_line.tiles.append(supply.take_random_tile())
+    azul.players[0].get_color_from_circle(Tile.RED, circles[0], -1, center)
+    time.sleep(1)
+    azul.players[1].get_color_from_circle(Tile.CYAN, circles[1], 0, center)
+    time.sleep(1)
+    azul.players[2].get_color_from_circle(Tile.YELLOW, circles[3], 2, center)
+    time.sleep(1)
+    azul.players[2].get_color_from_circle(Tile.YELLOW, circles[4], 2, center)
 
 
 def start():
