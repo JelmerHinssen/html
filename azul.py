@@ -2,7 +2,7 @@ from dataclasses import asdict, field
 import random
 import threading
 import time
-from typing import Optional
+from typing import ClassVar, Optional
 from enum import Enum
 import yaml
 
@@ -136,10 +136,30 @@ class BuildingLine:
                 children.append(HTMLTag("div", classes=["tile", f"tile-{self.tile.name.lower()}"]))
         return HTMLTag("div", classes=["buildingline"], children=children)
 
+    def end_of_turn(self, row: int, board: "Board", discard_pile: TileCollection) -> int:
+        """Processes this line and returns the score gained"""
+        if self.tile is None or self.count != self.length:
+            return 0
+
+        line = board.rows[row]
+        for i, spot in enumerate(line.tiles):
+            if spot.tile is self.tile and not spot.occupied:
+                break
+        else:
+            raise ValueError(f"No spot for {self.tile} in row {row + 1}")
+
+        discard_pile.add_tile(self.tile, self.count)
+        self.tile = None
+        self.count = 0
+
+        return board.fill(row, i)
+
 
 @dataclass
 class FloorLine:
     tiles: list[Tile | FirstTile]
+
+    penalty_scores: ClassVar[list[int]] = [1, 1, 2, 3, 4, 5, 6]
 
     def to_html(self, generator: HTMLGenerator) -> HTMLTag:
         children = []
@@ -148,6 +168,20 @@ class FloorLine:
         for _ in range(7 - len(self.tiles)):
             children.append(HTMLTag("div", classes=["tile", "tile-empty"]))
         return HTMLTag("div", children=children)
+
+    def end_of_turn(self, discard_pile: TileCollection) -> tuple[int, bool]:
+        """Clears the floor line. Computes the floor line penalty and whether the start player tile was in this line"""
+        starting = False
+        penalty = 0
+        for i, tile in enumerate(self.tiles):
+            if i < len(self.penalty_scores):
+                penalty += self.penalty_scores[i]
+            if tile is FirstTile.FIRST:
+                starting = True
+            else:
+                discard_pile.add_tile(tile)
+        self.tiles.clear()
+        return penalty, starting
 
 
 @dataclass
@@ -174,6 +208,13 @@ class Board:
         return BoardLine([TileSpot(Tile((i + index) % 5)) for i in range(5)])
 
     rows: list[BoardLine] = field(default_factory=lambda: [Board.empty_row(i) for i in range(5)])
+
+    def fill(self, row: int, col: int) -> int:
+        """Fill the spot at given row and column. Return the score gained by this move"""
+        spot = self.rows[row].tiles[col]
+        spot.occupied = True
+        # TODO: compute score
+        return 1
 
 
 @dataclass
@@ -216,11 +257,29 @@ class Player:
             center.first = False
         self.add_tiles_to_row(color, row, count)
 
+    def end_of_turn(self, discard_pile: TileCollection) -> tuple[int, bool]:
+        """
+        Performs the end of turn phase. Returns a tuple with the gained score this turn and whether the player is the
+        starting player next turn"""
+        score = 0
+        for i, line in enumerate(self.building_lines):
+            score += line.end_of_turn(i, self.board, discard_pile)
+            time.sleep(1)
+
+        floor_score, starting = self.floor_line.end_of_turn(discard_pile)
+        time.sleep(1)
+        return score - floor_score, starting
+
 
 @dataclass
 class Azul:
     supply: Supply
     players: list[Player]
+
+    def end_of_turn(self):
+        """Perform end of turn actions"""
+        for player in self.players:
+            player.end_of_turn(self.supply.discarded)
 
 
 azul: Azul | None = None
@@ -251,6 +310,10 @@ def run():
     azul.players[2].get_color_from_circle(Tile.YELLOW, circles[4], 2, center)
     time.sleep(1)
     azul.players[0].get_color_from_center(Tile.CYAN, 2, center)
+    time.sleep(1)
+    azul.players[1].get_color_from_circle(Tile.CYAN, circles[2], 4, center)
+    time.sleep(1)
+    azul.end_of_turn()
 
 
 def start():
