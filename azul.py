@@ -1,11 +1,16 @@
 from dataclasses import asdict, field
 import random
+import threading
+import time
 from typing import Optional
 from enum import Enum
 import yaml
 
 from tohtml import HTMLGenerator, DOMNode, HTMLTag, TextNode
 from yamlplus import dataclass, yaml_object
+
+
+class IllegalAction(Exception): ...
 
 
 @dataclass
@@ -33,14 +38,17 @@ class TileCollection:
         self.remove_tile(tile)
         return tile
 
-    def remove_tile(self, tile: "Tile"):
+    def remove_tile(self, tile: "Tile", count: int = 1):
         old = getattr(self, tile.name.lower())
-        if old <= 0:
-            raise ValueError(f"Collection does not have {tile}")
-        setattr(self, tile.name.lower(), old - 1)
+        if old < count:
+            raise ValueError(f"Collection does not have {count} {tile}(s)")
+        setattr(self, tile.name.lower(), old - count)
 
-    def add_tile(self, tile: "Tile"):
-        setattr(self, tile.name.lower(), getattr(self, tile.name.lower()) + 1)
+    def add_tile(self, tile: "Tile", count: int = 1):
+        setattr(self, tile.name.lower(), getattr(self, tile.name.lower()) + count)
+
+    def __getitem__(self, tile: "Tile"):
+        return getattr(self, tile.name.lower())
 
     def to_html(self, generator: HTMLGenerator) -> list["DOMNode"]:
         children = []
@@ -55,6 +63,13 @@ class TileCollection:
                     )
                 )
         return children
+
+    def remove_all(self, tile: "Tile"):
+        count = self[tile]
+        if count <= 0:
+            raise ValueError(f"Collection does not have {tile}")
+        self.remove_tile(tile, count)
+        return count
 
 
 @dataclass
@@ -124,7 +139,7 @@ class BuildingLine:
 
 @dataclass
 class FloorLine:
-    tiles: list[Tile]
+    tiles: list[Tile | FirstTile]
 
     def to_html(self, generator: HTMLGenerator) -> HTMLTag:
         children = []
@@ -167,6 +182,40 @@ class Player:
     floor_line: FloorLine
     board: Board
 
+    def get_color_from_circle(self, color: Tile, circle: TileCollection, row: int, center: CenterTileCollection):
+        try:
+            count = circle.remove_all(color)
+        except ValueError:
+            raise IllegalAction(f"No {color} on selected circle")
+        for tile in Tile:
+            left = circle[tile]
+            circle.remove_tile(tile, left)
+            center.add_tile(tile, left)
+        self.add_tiles_to_row(color, row, count)
+
+    def add_tiles_to_row(self, color: Tile, row: int, count: int):
+        if row < 0:
+            overflow = count
+        else:
+            line = self.building_lines[row]
+            if line.tile is not None and line.tile is not color:
+                raise IllegalAction(f"Cannot add {color} to line of {line.tile}")
+            line.tile = color
+            overflow = max(0, line.count + count - line.length)
+            line.count += count - overflow
+        for _ in range(overflow):
+            self.floor_line.tiles.append(color)
+
+    def get_color_from_center(self, color: Tile, row: int, center: CenterTileCollection):
+        try:
+            count = center.remove_all(color)
+        except ValueError:
+            raise IllegalAction(f"No {color} in center")
+        if center.first:
+            self.floor_line.tiles.append(FirstTile.FIRST)
+            center.first = False
+        self.add_tiles_to_row(color, row, count)
+
 
 @dataclass
 class Azul:
@@ -174,7 +223,47 @@ class Azul:
     players: list[Player]
 
 
-def main():
+azul: Azul | None = None
+thread: threading.Thread | None = None
+
+
+def get_state():
+    if not azul:
+        return "<h2>uh oh</h2>"
+    generator = HTMLGenerator()
+    html = generator(azul)
+    html.id = "main"
+    return html.to_html() + f"\n"
+
+
+def run():
+    global azul
+    assert azul is not None
+    circles = azul.supply.circles
+    center = azul.supply.center
+    time.sleep(1)
+    azul.players[0].get_color_from_circle(Tile.RED, circles[0], -1, center)
+    time.sleep(1)
+    azul.players[1].get_color_from_circle(Tile.CYAN, circles[1], 0, center)
+    time.sleep(1)
+    azul.players[2].get_color_from_circle(Tile.YELLOW, circles[3], 2, center)
+    time.sleep(1)
+    azul.players[2].get_color_from_circle(Tile.YELLOW, circles[4], 2, center)
+    time.sleep(1)
+    azul.players[0].get_color_from_center(Tile.CYAN, 2, center)
+
+
+def start():
+    global thread
+    if thread is not None:
+        return ""
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+
+def init():
+    print(f"Initialize azul")
+    global azul
     random.seed(656321)
     azul = Azul(
         Supply(
@@ -190,8 +279,12 @@ def main():
         for _ in range(4):
             circle.add_tile(supply.take_random_tile())
 
-    azul.players[0].floor_line.tiles.append(supply.take_random_tile())
 
+init()
+
+
+def main():
+    init()
     generator = HTMLGenerator()
     html = generator(azul)
     html.id = "main"
