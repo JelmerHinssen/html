@@ -1,11 +1,12 @@
-☐ Create server broadcasting current state
-☐ Create page that queries the state repeatedly
-☐ Tile selection from circle
-☐ Tile selection from center
-☐ Tile overflow
+✔ Create server broadcasting current state @done(25-08-22 13:31)
+✔ Create page that queries the state repeatedly @done(25-08-22 13:31)
+✔ Tile selection from circle @done(25-08-22 13:31)
+✔ Tile selection from center @done(25-08-22 13:31)
+✔ Tile overflow @done(25-08-22 13:31)
 ☐ End of turn
     ☐ Tiles to board
     ☐ Scoring
 ☐ Turn order
 ☐ Interactive actions via UI
 ☐ AI
+☐ Tile | FirstTile toyaml
