@@ -209,12 +209,44 @@ class Board:
 
     rows: list[BoardLine] = field(default_factory=lambda: [Board.empty_row(i) for i in range(5)])
 
+    @staticmethod
+    def adjacent(line: list[TileSpot], index: int) -> int:
+        """Return the length of the segment of the tile at given index"""
+        assert line[index].occupied
+
+        # Get start index of segment
+        start = index
+        while start - 1 >= 0 and line[start - 1].occupied:
+            start -= 1
+
+        # Get end index of segment
+        end = index
+        while end + 1 < len(line) and line[end + 1].occupied:
+            end += 1
+
+        return end - start + 1
+
+    def adjacent_row(self, row: int, col: int) -> int:
+        """Return the segment length of the row segment of the given tile"""
+        return Board.adjacent(self.rows[row].tiles, col)
+
+    def adjacent_col(self, row: int, col: int) -> int:
+        """Return the segment length of the column segment of the given tile"""
+        return Board.adjacent([line.tiles[col] for line in self.rows], row)
+
     def fill(self, row: int, col: int) -> int:
         """Fill the spot at given row and column. Return the score gained by this move"""
         spot = self.rows[row].tiles[col]
         spot.occupied = True
-        # TODO: compute score
-        return 1
+
+        row_score = self.adjacent_row(row, col)
+        if row_score == 1:
+            row_score = 0
+        col_score = self.adjacent_col(row, col)
+        if col_score == 1:
+            col_score = 0
+
+        return max(1, row_score + col_score)
 
 
 @dataclass
@@ -222,6 +254,7 @@ class Player:
     building_lines: list[BuildingLine]
     floor_line: FloorLine
     board: Board
+    score: int = 0
 
     def get_color_from_circle(self, color: Tile, circle: TileCollection, row: int, center: CenterTileCollection):
         try:
@@ -257,18 +290,18 @@ class Player:
             center.first = False
         self.add_tiles_to_row(color, row, count)
 
-    def end_of_turn(self, discard_pile: TileCollection) -> tuple[int, bool]:
+    def end_of_turn(self, discard_pile: TileCollection) -> bool:
         """
-        Performs the end of turn phase. Returns a tuple with the gained score this turn and whether the player is the
+        Performs the end of turn phase including updating the score. Returns whether the player is the
         starting player next turn"""
-        score = 0
         for i, line in enumerate(self.building_lines):
-            score += line.end_of_turn(i, self.board, discard_pile)
+            self.score += line.end_of_turn(i, self.board, discard_pile)
             time.sleep(1)
 
-        floor_score, starting = self.floor_line.end_of_turn(discard_pile)
+        penalty, starting = self.floor_line.end_of_turn(discard_pile)
+        self.score -= penalty
         time.sleep(1)
-        return score - floor_score, starting
+        return starting
 
 
 @dataclass
@@ -280,6 +313,12 @@ class Azul:
         """Perform end of turn actions"""
         for player in self.players:
             player.end_of_turn(self.supply.discarded)
+
+    def start_turn(self):
+        supply = self.supply.available
+        for circle in self.supply.circles:
+            for _ in range(4):
+                circle.add_tile(supply.take_random_tile())
 
 
 azul: Azul | None = None
@@ -301,17 +340,11 @@ def run():
     circles = azul.supply.circles
     center = azul.supply.center
     time.sleep(1)
-    azul.players[0].get_color_from_circle(Tile.RED, circles[0], -1, center)
+    azul.players[0].get_color_from_circle(Tile.RED, circles[1], 2, center)
     time.sleep(1)
-    azul.players[1].get_color_from_circle(Tile.CYAN, circles[1], 0, center)
+    azul.players[0].get_color_from_circle(Tile.BLUE, circles[0], 0, center)
     time.sleep(1)
-    azul.players[2].get_color_from_circle(Tile.YELLOW, circles[3], 2, center)
-    time.sleep(1)
-    azul.players[2].get_color_from_circle(Tile.YELLOW, circles[4], 2, center)
-    time.sleep(1)
-    azul.players[0].get_color_from_center(Tile.CYAN, 2, center)
-    time.sleep(1)
-    azul.players[1].get_color_from_circle(Tile.CYAN, circles[2], 4, center)
+    azul.players[0].get_color_from_center(Tile.CYAN, 1, center)
     time.sleep(1)
     azul.end_of_turn()
 
@@ -337,10 +370,7 @@ def init():
         ),
         [Player([BuildingLine(i) for i in range(1, 6)], FloorLine([]), Board()) for _ in range(3)],
     )
-    supply = azul.supply.available
-    for circle in azul.supply.circles:
-        for _ in range(4):
-            circle.add_tile(supply.take_random_tile())
+    azul.start_turn()
 
 
 init()

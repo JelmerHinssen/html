@@ -5,7 +5,8 @@
 ✔ Tile overflow @done(25-08-22 13:31)
 ☐ End of turn
     ✔ Tiles to board @done(25-08-22 13:59)
-    ☐ Scoring
+    ✔ Scoring @done(25-08-22 15:25)
+    ☐ Start of next turn
 ☐ Turn order
 ☐ Interactive actions via UI
 ☐ AI
