@@ -20,7 +20,11 @@
   display: flex;
   flex-wrap: wrap;
 }
+.players {
+  gap: 0.5em;
+}
 .players > div {
+  padding: 0.5em;
   display: grid;
   grid-template-areas:
     "building board"
@@ -62,7 +66,7 @@
   &.tile-empty {
     border: 1px black solid;
     cursor: default;
-    opacity: 0.5;
+    opacity: 0.3;
   }
   &.tile-spacer {
     cursor: default;
@@ -93,4 +97,10 @@
 
 .players > div {
   border: 1px black solid;
+}
+
+.supply,
+.center,
+#main {
+  margin-bottom: 1em;
 }

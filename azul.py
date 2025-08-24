@@ -1,8 +1,9 @@
 from dataclasses import asdict, field
+from itertools import cycle, repeat
 import random
 import threading
 import time
-from typing import Optional
+from typing import ClassVar, Optional
 from enum import Enum
 import yaml
 
@@ -21,17 +22,22 @@ class TileCollection:
     yellow: int = 0
     black: int = 0
 
+    def tile_count(self):
+        return sum((getattr(self, tile.name.lower()) for tile in Tile))
+
     def random_tile(self) -> "Tile":
-        tiles = list(Tile)
-        count = sum((getattr(self, tile.name.lower()) for tile in tiles))
+        count = self.tile_count()
         if count == 0:
             raise ValueError(f"Cannot draw from empty collection")
         rnd = random.randint(0, count - 1)
-        for tile in tiles:
+        for tile in Tile:
             if rnd < getattr(self, tile.name.lower()):
                 return tile
             rnd -= getattr(self, tile.name.lower())
         raise ValueError(f"Invalid rng")
+
+    def empty(self) -> bool:
+        return self.tile_count() == 0
 
     def take_random_tile(self):
         tile = self.random_tile()
@@ -82,6 +88,9 @@ class CenterTileCollection(TileCollection):
             children.insert(0, HTMLTag("div", classes=["tile", "tile-first"], children=[TextNode("first")]))
         return children
 
+    def empty(self) -> bool:
+        return super().empty() and not self.first
+
 
 @dataclass
 class Supply:
@@ -89,6 +98,13 @@ class Supply:
     discarded: TileCollection
     center: CenterTileCollection
     circles: list[TileCollection]
+
+    def take_random_tile(self):
+        if self.available.empty():
+            for tile in Tile:
+                self.available.add_tile(tile, self.discarded.remove_all(tile))
+
+        return self.available.take_random_tile()
 
     def to_html(self, generator: HTMLGenerator) -> list["DOMNode"]:
         children = []
@@ -136,10 +152,30 @@ class BuildingLine:
                 children.append(HTMLTag("div", classes=["tile", f"tile-{self.tile.name.lower()}"]))
         return HTMLTag("div", classes=["buildingline"], children=children)
 
+    def end_of_turn(self, row: int, board: "Board", discard_pile: TileCollection) -> int:
+        """Processes this line and returns the score gained"""
+        if self.tile is None or self.count != self.length:
+            return 0
+
+        line = board.rows[row]
+        for i, spot in enumerate(line.tiles):
+            if spot.tile is self.tile and not spot.occupied:
+                break
+        else:
+            raise ValueError(f"No spot for {self.tile} in row {row + 1}")
+
+        discard_pile.add_tile(self.tile, self.count)
+        self.tile = None
+        self.count = 0
+
+        return board.fill(row, i)
+
 
 @dataclass
 class FloorLine:
     tiles: list[Tile | FirstTile]
+
+    penalty_scores: ClassVar[list[int]] = [1, 1, 2, 3, 4, 5, 6]
 
     def to_html(self, generator: HTMLGenerator) -> HTMLTag:
         children = []
@@ -148,6 +184,20 @@ class FloorLine:
         for _ in range(7 - len(self.tiles)):
             children.append(HTMLTag("div", classes=["tile", "tile-empty"]))
         return HTMLTag("div", children=children)
+
+    def end_of_turn(self, discard_pile: TileCollection) -> tuple[int, bool]:
+        """Clears the floor line. Computes the floor line penalty and whether the start player tile was in this line"""
+        starting = False
+        penalty = 0
+        for i, tile in enumerate(self.tiles):
+            if i < len(self.penalty_scores):
+                penalty += self.penalty_scores[i]
+            if tile is FirstTile.FIRST:
+                starting = True
+            else:
+                discard_pile.add_tile(tile)
+        self.tiles.clear()
+        return penalty, starting
 
 
 @dataclass
@@ -175,12 +225,53 @@ class Board:
 
     rows: list[BoardLine] = field(default_factory=lambda: [Board.empty_row(i) for i in range(5)])
 
+    @staticmethod
+    def adjacent(line: list[TileSpot], index: int) -> int:
+        """Return the length of the segment of the tile at given index"""
+        assert line[index].occupied
+
+        # Get start index of segment
+        start = index
+        while start - 1 >= 0 and line[start - 1].occupied:
+            start -= 1
+
+        # Get end index of segment
+        end = index
+        while end + 1 < len(line) and line[end + 1].occupied:
+            end += 1
+
+        return end - start + 1
+
+    def adjacent_row(self, row: int, col: int) -> int:
+        """Return the segment length of the row segment of the given tile"""
+        return Board.adjacent(self.rows[row].tiles, col)
+
+    def adjacent_col(self, row: int, col: int) -> int:
+        """Return the segment length of the column segment of the given tile"""
+        return Board.adjacent([line.tiles[col] for line in self.rows], row)
+
+    def fill(self, row: int, col: int) -> int:
+        """Fill the spot at given row and column. Return the score gained by this move"""
+        spot = self.rows[row].tiles[col]
+        spot.occupied = True
+
+        row_score = self.adjacent_row(row, col)
+        if row_score == 1:
+            row_score = 0
+        col_score = self.adjacent_col(row, col)
+        if col_score == 1:
+            col_score = 0
+
+        return max(1, row_score + col_score)
+
 
 @dataclass
 class Player:
     building_lines: list[BuildingLine]
     floor_line: FloorLine
     board: Board
+    index: int
+    score: int = 0
 
     def get_color_from_circle(self, color: Tile, circle: TileCollection, row: int, center: CenterTileCollection):
         try:
@@ -216,11 +307,70 @@ class Player:
             center.first = False
         self.add_tiles_to_row(color, row, count)
 
+    def end_of_turn(self, discard_pile: TileCollection) -> bool:
+        """
+        Performs the end of turn phase including updating the score. Returns whether the player is the
+        starting player next turn"""
+        for i, line in enumerate(self.building_lines):
+            self.score += line.end_of_turn(i, self.board, discard_pile)
+            time.sleep(1)
+
+        penalty, starting = self.floor_line.end_of_turn(discard_pile)
+        self.score -= penalty
+        time.sleep(1)
+        return starting
+
+
+@dataclass
+class Action:
+    circle: int
+    row: int
+    color: Tile
+
 
 @dataclass
 class Azul:
     supply: Supply
     players: list[Player]
+    start_player: int = 0
+
+    def ordered_players(self):
+        return self.players[self.start_player :] + self.players[: self.start_player]
+
+    def end_of_turn(self):
+        """Perform end of turn actions"""
+
+        for i, player in enumerate(self.players):
+            if player.end_of_turn(self.supply.discarded):
+                self.start_player = i
+
+    def start_turn(self):
+        try:
+            for circle in self.supply.circles:
+                for _ in range(4):
+                    circle.add_tile(self.supply.take_random_tile())
+        except ValueError:
+            # Don't fill all circles if out of tiles
+            pass
+
+    def get_action_for_player(self, player: Player) -> Action:
+        raise NotImplementedError
+
+    def do_turn_for_player(self, player: Player):
+        action = self.get_action_for_player(player)
+        print(f"Action for player {player.index}: {action}")
+        if action.circle == -1:
+            player.get_color_from_center(action.color, action.row, self.supply.center)
+        else:
+            player.get_color_from_circle(
+                action.color, self.supply.circles[action.circle], action.row, self.supply.center
+            )
+        time.sleep(1)
+
+    def do_turn(self):
+        players = cycle(self.ordered_players())
+        while not (self.supply.center.empty() and all([circle.empty() for circle in self.supply.circles])):
+            self.do_turn_for_player(next(players))
 
 
 azul: Azul | None = None
@@ -236,21 +386,31 @@ def get_state():
     return html.to_html() + f"\n"
 
 
+turns = [
+    Action(1, 2, Tile.RED),
+    Action(0, 0, Tile.BLUE),
+    Action(-1, 1, Tile.CYAN),
+    Action(2, 0, Tile.BLUE),
+    Action(-1, 2, Tile.CYAN),
+    Action(3, 0, Tile.CYAN),
+    Action(-1, 1, Tile.YELLOW),
+    Action(-1, 4, Tile.RED),
+    Action(6, 2, Tile.CYAN),
+    Action(4, 3, Tile.YELLOW),
+    Action(5, 4, Tile.RED),
+    Action(-1, 3, Tile.CYAN),
+    Action(-1, 4, Tile.BLUE),
+    Action(-1, 4, Tile.RED),
+    Action(-1, 4, Tile.YELLOW),
+]
+
+
 def run():
     global azul
     assert azul is not None
-    circles = azul.supply.circles
-    center = azul.supply.center
-    time.sleep(1)
-    azul.players[0].get_color_from_circle(Tile.RED, circles[0], -1, center)
-    time.sleep(1)
-    azul.players[1].get_color_from_circle(Tile.CYAN, circles[1], 0, center)
-    time.sleep(1)
-    azul.players[2].get_color_from_circle(Tile.YELLOW, circles[3], 2, center)
-    time.sleep(1)
-    azul.players[2].get_color_from_circle(Tile.YELLOW, circles[4], 2, center)
-    time.sleep(1)
-    azul.players[0].get_color_from_center(Tile.CYAN, 2, center)
+    azul.do_turn()
+    azul.end_of_turn()
+    azul.start_turn()
 
 
 def start():
@@ -272,12 +432,11 @@ def init():
             CenterTileCollection(),
             circles=[TileCollection() for _ in range(7)],
         ),
-        [Player([BuildingLine(i) for i in range(1, 6)], FloorLine([]), Board()) for _ in range(3)],
+        [Player([BuildingLine(i) for i in range(1, 6)], FloorLine([]), Board(), i) for i in range(3)],
     )
-    supply = azul.supply.available
-    for circle in azul.supply.circles:
-        for _ in range(4):
-            circle.add_tile(supply.take_random_tile())
+    turn = cycle(turns)
+    azul.get_action_for_player = lambda player: next(turn)
+    azul.start_turn()
 
 
 init()
