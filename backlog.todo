@@ -6,8 +6,8 @@
 ☐ End of turn
     ✔ Tiles to board @done(25-08-22 13:59)
     ✔ Scoring @done(25-08-22 15:25)
-    ☐ Start of next turn
-☐ Turn order
+    ✔ Start of next turn @done(25-08-24 14:12)
+✔ Turn order @done(25-08-24 14:12)
 ☐ Interactive actions via UI
 ☐ AI
 ☐ Tile | FirstTile toyaml
