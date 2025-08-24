@@ -3,7 +3,7 @@ from itertools import cycle, repeat
 import random
 import threading
 import time
-from typing import ClassVar, Optional
+from typing import ClassVar, Optional, cast
 from enum import Enum
 import yaml
 
@@ -157,11 +157,8 @@ class BuildingLine:
         if self.tile is None or self.count != self.length:
             return 0
 
-        line = board.rows[row]
-        for i, spot in enumerate(line.tiles):
-            if spot.tile is self.tile and not spot.occupied:
-                break
-        else:
+        i, spot = board.spot_for_color(row, self.tile)
+        if spot.occupied:
             raise ValueError(f"No spot for {self.tile} in row {row + 1}")
 
         discard_pile.add_tile(self.tile, self.count)
@@ -264,6 +261,20 @@ class Board:
 
         return max(1, row_score + col_score)
 
+    def spot_for_color(self, row: int, color: Tile):
+        line = self.rows[row]
+        for i, spot in enumerate(line.tiles):
+            if spot.tile is color:
+                return i, spot
+        raise ValueError(f"No spot for {color} in row {row + 1}")
+
+
+@dataclass
+class Action:
+    circle: int
+    row: int
+    color: Tile
+
 
 @dataclass
 class Player:
@@ -291,6 +302,7 @@ class Player:
             line = self.building_lines[row]
             if line.tile is not None and line.tile is not color:
                 raise IllegalAction(f"Cannot add {color} to line of {line.tile}")
+
             line.tile = color
             overflow = max(0, line.count + count - line.length)
             line.count += count - overflow
@@ -320,12 +332,40 @@ class Player:
         time.sleep(1)
         return starting
 
+    def legal_rows_for_color(self, color: Tile, filter_floor: bool):
+        if not filter_floor:
+            yield -1
+        for i, line in enumerate(self.building_lines):
+            if line.tile is None:
+                if self.board.spot_for_color(i, color)[1].occupied:
+                    continue
+            elif line.tile is not color:
+                continue
+            elif line.count >= line.length:
+                continue
+            yield i
 
-@dataclass
-class Action:
-    circle: int
-    row: int
-    color: Tile
+    def legal_moves(self, game: "Azul", filter_floor: bool = True):
+        def moves_for_collection(index, circle):
+            for tile in Tile:
+                if circle[tile] == 0:
+                    continue
+                for row in self.legal_rows_for_color(tile, filter_floor):
+                    yield Action(index, row, tile)
+
+        for i, circle in enumerate(game.supply.circles):
+            yield from moves_for_collection(i, circle)
+
+        yield from moves_for_collection(-1, game.supply.center)
+
+    def all_moves(self, game: "Azul"):
+        generator = self.legal_moves(game, True)
+        try:
+            first = next(generator)
+            yield first
+            yield from generator
+        except StopIteration:
+            yield from self.legal_moves(game, False)
 
 
 @dataclass
@@ -352,6 +392,7 @@ class Azul:
         except ValueError:
             # Don't fill all circles if out of tiles
             pass
+        self.supply.center.first = True
 
     def get_action_for_player(self, player: Player) -> Action:
         raise NotImplementedError
@@ -408,9 +449,10 @@ turns = [
 def run():
     global azul
     assert azul is not None
-    azul.do_turn()
-    azul.end_of_turn()
-    azul.start_turn()
+    for _ in range(5):
+        azul.do_turn()
+        azul.end_of_turn()
+        azul.start_turn()
 
 
 def start():
@@ -419,6 +461,12 @@ def start():
         return ""
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
+
+
+def random_legal_move(player: Player, game: Azul):
+    moves = list(player.all_moves(game))
+    rnd = random.randint(0, len(moves) - 1)
+    return moves[rnd]
 
 
 def init():
@@ -435,7 +483,7 @@ def init():
         [Player([BuildingLine(i) for i in range(1, 6)], FloorLine([]), Board(), i) for i in range(3)],
     )
     turn = cycle(turns)
-    azul.get_action_for_player = lambda player: next(turn)
+    azul.get_action_for_player = lambda player: random_legal_move(player, cast(Azul, azul))
     azul.start_turn()
 
 
