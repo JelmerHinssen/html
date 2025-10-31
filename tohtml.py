@@ -106,7 +106,12 @@ class HTMLGenerator:
     def generate_from_dataclass(self, obj: Any) -> HTMLTag | list[DOMNode]:
         if not is_dataclass(obj):
             raise ValueError("Object is not a dataclass")
-        fields = {field.name: getattr(obj, field.name) for field in obj.__dataclass_fields__.values()}
+        no_html = getattr(obj, "_no_html_", []) + ["_no_html_"]
+        fields = {
+            field.name: getattr(obj, field.name)
+            for field in obj.__dataclass_fields__.values()
+            if field.name not in no_html
+        }
         return self.generators[dict](fields, self)
 
     def generate(self, obj: Any) -> HTMLTag | list[DOMNode]:

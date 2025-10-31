@@ -1,17 +1,27 @@
-from dataclasses import asdict, field
-from itertools import cycle, repeat
 import random
+import re
 import threading
 import time
-from typing import ClassVar, Optional, cast
+import typing
+from dataclasses import asdict, field
 from enum import Enum
-import yaml
+from itertools import cycle
+from typing import ClassVar, Optional, TypeAlias, cast
 
-from tohtml import HTMLGenerator, DOMNode, HTMLTag, TextNode
+from tohtml import DOMNode, HTMLGenerator, HTMLTag, TextNode
 from yamlplus import dataclass, yaml_object
 
 
 class IllegalAction(Exception): ...
+
+
+class Random(typing.Protocol):
+    def randint(self, a: int, b: int) -> int: ...
+    def seed(self, a: None | int | float | str | bytes | bytearray = None, version: int = 2) -> None: ...
+
+
+delay = 0.0
+turn_delay = delay * 5
 
 
 @dataclass
@@ -25,11 +35,11 @@ class TileCollection:
     def tile_count(self):
         return sum((getattr(self, tile.name.lower()) for tile in Tile))
 
-    def random_tile(self) -> "Tile":
+    def random_tile(self, rng: Random = random) -> "Tile":
         count = self.tile_count()
         if count == 0:
             raise ValueError(f"Cannot draw from empty collection")
-        rnd = random.randint(0, count - 1)
+        rnd = rng.randint(0, count - 1)
         for tile in Tile:
             if rnd < getattr(self, tile.name.lower()):
                 return tile
@@ -39,8 +49,8 @@ class TileCollection:
     def empty(self) -> bool:
         return self.tile_count() == 0
 
-    def take_random_tile(self):
-        tile = self.random_tile()
+    def take_random_tile(self, rng: Random = random):
+        tile = self.random_tile(rng=rng)
         self.remove_tile(tile)
         return tile
 
@@ -99,12 +109,12 @@ class Supply:
     center: CenterTileCollection
     circles: list[TileCollection]
 
-    def take_random_tile(self):
+    def take_random_tile(self, rng: Random = random):
         if self.available.empty():
             for tile in Tile:
                 self.available.add_tile(tile, self.discarded.remove_all(tile))
 
-        return self.available.take_random_tile()
+        return self.available.take_random_tile(rng=rng)
 
     def to_html(self, generator: HTMLGenerator) -> list["DOMNode"]:
         children = []
@@ -125,10 +135,23 @@ class Supply:
 @yaml_object
 class Tile(Enum):
     BLUE = 0
-    CYAN = 1
+    YELLOW = 1
     RED = 2
-    YELLOW = 3
-    BLACK = 4
+    BLACK = 3
+    CYAN = 4
+    _ignore_ = ["_abbreviation_dict"]
+    _abbreviation_dict_: dict[str, "Tile"]
+
+    @property
+    def abbreviation(self) -> str:
+        return "BYRKC"[self.value]
+
+    @classmethod
+    def from_abbreviation(cls, val: str):
+        return cls._abbreviation_dict_[val]
+
+
+Tile._abbreviation_dict_ = {tile.abbreviation: tile for tile in Tile}
 
 
 class FirstTile(Enum):
@@ -213,12 +236,24 @@ class TileSpot:
 class BoardLine:
     tiles: list[TileSpot]
 
+    def is_complete(self):
+        return all([tile.occupied for tile in self.tiles])
+
+    def spot_for_color(self, color: Tile):
+        for i, spot in enumerate(self.tiles):
+            if spot.tile is color:
+                return i, spot
+        raise ValueError(f"No spot for {color}")
+
+    def has_color(self, color: Tile):
+        return self.spot_for_color(color)[1].occupied
+
 
 @dataclass
 class Board:
     @staticmethod
     def empty_row(index):
-        return BoardLine([TileSpot(Tile((i + index) % 5)) for i in range(5)])
+        return BoardLine([TileSpot(Tile((i - index) % 5)) for i in range(5)])
 
     rows: list[BoardLine] = field(default_factory=lambda: [Board.empty_row(i) for i in range(5)])
 
@@ -262,11 +297,14 @@ class Board:
         return max(1, row_score + col_score)
 
     def spot_for_color(self, row: int, color: Tile):
-        line = self.rows[row]
-        for i, spot in enumerate(line.tiles):
-            if spot.tile is color:
-                return i, spot
-        raise ValueError(f"No spot for {color} in row {row + 1}")
+        try:
+            return self.rows[row].spot_for_color(color)
+        except ValueError:
+            raise ValueError(f"No spot for {color} in row {row + 1}")
+
+    def columns(self) -> list[BoardLine]:
+        n = len(self.rows)
+        return [BoardLine(tiles=[self.rows[j].tiles[i] for j in range(n)]) for i in range(n)]
 
 
 @dataclass
@@ -274,6 +312,16 @@ class Action:
     circle: int
     row: int
     color: Tile
+    _str_pattern: ClassVar[re.Pattern] = re.compile("^[A-Z][0-9][0-9]$")
+
+    def __str__(self) -> str:
+        return f"{self.color.abbreviation}{self.circle+1}{self.row+1}"
+
+    @classmethod
+    def from_str(cls, val: str):
+        if not cls._str_pattern.match(val):
+            raise ValueError(f"Invalid action string '{val}'")
+        return Action(int(val[1]) - 1, int(val[2]) - 1, Tile.from_abbreviation(val[0]))
 
 
 @dataclass
@@ -325,11 +373,11 @@ class Player:
         starting player next turn"""
         for i, line in enumerate(self.building_lines):
             self.score += line.end_of_turn(i, self.board, discard_pile)
-            time.sleep(1)
+            time.sleep(delay)
 
         penalty, starting = self.floor_line.end_of_turn(discard_pile)
         self.score -= penalty
-        time.sleep(1)
+        time.sleep(delay)
         return starting
 
     def legal_rows_for_color(self, color: Tile, filter_floor: bool):
@@ -367,12 +415,55 @@ class Player:
         except StopIteration:
             yield from self.legal_moves(game, False)
 
+    def has_complete_row(self):
+        return any([row.is_complete() for row in self.board.rows])
+
+    def get_bonus_score(self) -> int:
+        """Return the bonus score this player currently gets"""
+        ROW_BONUS = 2
+        COLUMN_BONUS = 5
+        COLOR_BONUS = 10
+
+        bonus_score = 0
+
+        for row in self.board.rows:
+            if row.is_complete():
+                bonus_score += ROW_BONUS
+
+        for col in self.board.columns():
+            if col.is_complete():
+                bonus_score += COLUMN_BONUS
+
+        for color in Tile:
+            if all([row.has_color(color) for row in self.board.rows]):
+                bonus_score += COLOR_BONUS
+
+        return bonus_score
+
+    def gain_bonus_score(self):
+        self.score += self.get_bonus_score()
+
+
+Round: TypeAlias = tuple[int, list[Action]]
+Replay: TypeAlias = list[Round]
+
+
+def raw_replay(replay: Replay) -> str:
+    return ", ".join([str(action) for _, round in replay for action in round])
+
 
 @dataclass
 class Azul:
     supply: Supply
     players: list[Player]
     start_player: int = 0
+    replay: Replay = field(default_factory=list)
+    seed: None | int = None
+    rng: Random = random
+    _no_html_: ClassVar[list[str]] = ["replay", "seed", "rng"]
+
+    def __post_init__(self):
+        self.rng = random.Random(self.seed)
 
     def ordered_players(self):
         return self.players[self.start_player :] + self.players[: self.start_player]
@@ -385,10 +476,11 @@ class Azul:
                 self.start_player = i
 
     def start_turn(self):
+        self.replay.append((self.start_player, []))
         try:
             for circle in self.supply.circles:
                 for _ in range(4):
-                    circle.add_tile(self.supply.take_random_tile())
+                    circle.add_tile(self.supply.take_random_tile(rng=self.rng))
         except ValueError:
             # Don't fill all circles if out of tiles
             pass
@@ -399,6 +491,7 @@ class Azul:
 
     def do_turn_for_player(self, player: Player):
         action = self.get_action_for_player(player)
+        self.replay[-1][1].append(action)
         print(f"Action for player {player.index}: {action}")
         if action.circle == -1:
             player.get_color_from_center(action.color, action.row, self.supply.center)
@@ -406,16 +499,84 @@ class Azul:
             player.get_color_from_circle(
                 action.color, self.supply.circles[action.circle], action.row, self.supply.center
             )
-        time.sleep(1)
+        time.sleep(turn_delay)
 
     def do_turn(self):
         players = cycle(self.ordered_players())
         while not (self.supply.center.empty() and all([circle.empty() for circle in self.supply.circles])):
             self.do_turn_for_player(next(players))
 
+    def game_ended(self):
+        return any([player.has_complete_row() for player in self.players])
+
+    def play_game(self):
+        """Plays a full game. Assumes start_turn() is already called once."""
+        self.do_turn()
+        self.end_of_turn()
+        while not self.game_ended():
+            self.start_turn()
+            self.do_turn()
+            self.end_of_turn()
+
+        for player in self.players:
+            player.gain_bonus_score()
+
+    def format_round(self, round: Round) -> str:
+        """Formats the actions of a round in columns"""
+        i, actions = round
+        player_count = len(self.players)
+        first_turn = actions[: player_count - i]
+        other_turns = [actions[j : j + player_count] for j in range(player_count - i, len(actions), player_count)]
+
+        def format_row(turn):
+            return " ".join(map(str, turn))
+
+        return "\n".join(["    " * i + format_row(first_turn)] + [format_row(turn) for turn in other_turns])
+
+    def format_replay(self, replay: Replay) -> str:
+        """Formats the replay of a game in columns"""
+        return "\n\n".join(map(self.format_round, replay))
+
+    @staticmethod
+    def initialize(player_count: int, seed: int | None = None):
+        return Azul(
+            Supply(
+                TileCollection(20, 20, 20, 20, 20),
+                TileCollection(),
+                CenterTileCollection(),
+                circles=[TileCollection() for _ in range(7)],
+            ),
+            [Player([BuildingLine(i) for i in range(1, 6)], FloorLine([]), Board(), i) for i in range(player_count)],
+            seed=seed,
+        )
+
 
 azul: Azul | None = None
 thread: threading.Thread | None = None
+lock = threading.RLock()
+action_selected = threading.Condition(lock)
+selected_action: Optional[Action] = None
+
+
+def set_action(circle: str, row: str, color: str):
+    """Sets the selected action for the current human player"""
+    global selected_action
+    with action_selected:
+        selected_action = Action(int(circle), int(row), Tile[color.upper()])
+        action_selected.notify()
+
+
+class HumanPlayer:
+    def __init__(self, player: Player):
+        self.player = player
+
+    def get_action(self) -> Action:
+        global selected_action
+        with action_selected:
+            selected_action = None
+            action_selected.wait_for(lambda: selected_action is not None)
+            assert selected_action is not None
+            return selected_action
 
 
 def get_state():
@@ -427,32 +588,15 @@ def get_state():
     return html.to_html() + f"\n"
 
 
-turns = [
-    Action(1, 2, Tile.RED),
-    Action(0, 0, Tile.BLUE),
-    Action(-1, 1, Tile.CYAN),
-    Action(2, 0, Tile.BLUE),
-    Action(-1, 2, Tile.CYAN),
-    Action(3, 0, Tile.CYAN),
-    Action(-1, 1, Tile.YELLOW),
-    Action(-1, 4, Tile.RED),
-    Action(6, 2, Tile.CYAN),
-    Action(4, 3, Tile.YELLOW),
-    Action(5, 4, Tile.RED),
-    Action(-1, 3, Tile.CYAN),
-    Action(-1, 4, Tile.BLUE),
-    Action(-1, 4, Tile.RED),
-    Action(-1, 4, Tile.YELLOW),
-]
-
-
 def run():
     global azul
     assert azul is not None
-    for _ in range(5):
-        azul.do_turn()
-        azul.end_of_turn()
-        azul.start_turn()
+    azul.play_game()
+    # Save replay
+    with open("game.txt", "w") as f:
+        f.write(f"{azul.seed}\n")
+        f.write(azul.format_replay(azul.replay))
+        f.write("\n")
 
 
 def start():
@@ -469,21 +613,32 @@ def random_legal_move(player: Player, game: Azul):
     return moves[rnd]
 
 
+def select_move(player: Player, game: Azul):
+    if player.index < 0:
+        return HumanPlayer(player).get_action()
+    else:
+        return random_legal_move(player, game)
+
+
+def replay_game(seed: int, player_count: int, replay: str):
+    global azul
+    azul = Azul.initialize(player_count, seed)
+    turns = (Action.from_str(move) for move in re.sub("[, \t\n\r]+", ",", replay).split(",") if move != "")
+    azul.get_action_for_player = lambda player: next(turns)
+    azul.start_turn()
+
+
 def init():
     print(f"Initialize azul")
+    with open("game0.txt") as f:
+        seed = int(f.readline())
+        replay = f.read()
+    replay_game(seed, 3, replay)
+    return
+
     global azul
-    random.seed(656321)
-    azul = Azul(
-        Supply(
-            TileCollection(20, 20, 20, 20),
-            TileCollection(),
-            CenterTileCollection(),
-            circles=[TileCollection() for _ in range(7)],
-        ),
-        [Player([BuildingLine(i) for i in range(1, 6)], FloorLine([]), Board(), i) for i in range(3)],
-    )
-    turn = cycle(turns)
-    azul.get_action_for_player = lambda player: random_legal_move(player, cast(Azul, azul))
+    azul = Azul.initialize(3, seed=656321)
+    azul.get_action_for_player = lambda player: select_move(player, cast(Azul, azul))
     azul.start_turn()
 
 
