@@ -20,7 +20,11 @@
   display: flex;
   flex-wrap: wrap;
 }
+.players {
+  gap: 0.5em;
+}
 .players > div {
+  padding: 0.5em;
   display: grid;
   grid-template-areas:
     "building board"
@@ -29,12 +33,18 @@
   width: max-content;
   .building_lines {
     grid-area: building;
+    cursor: pointer;
   }
   .board {
     grid-area: board;
   }
   .floor_line {
     grid-area: floor;
+    cursor: pointer;
+  }
+  .building_lines .tile-empty,
+  .floor_line .tile-empty {
+    cursor: pointer;
   }
 }
 .tile {
@@ -62,7 +72,7 @@
   &.tile-empty {
     border: 1px black solid;
     cursor: default;
-    opacity: 0.5;
+    opacity: 0.3;
   }
   &.tile-spacer {
     cursor: default;
@@ -93,4 +103,10 @@
 
 .players > div {
   border: 1px black solid;
+}
+
+.supply,
+.center,
+#main {
+  margin-bottom: 1em;
 }
