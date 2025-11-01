@@ -33,12 +33,18 @@
   width: max-content;
   .building_lines {
     grid-area: building;
+    cursor: pointer;
   }
   .board {
     grid-area: board;
   }
   .floor_line {
     grid-area: floor;
+    cursor: pointer;
+  }
+  .building_lines .tile-empty,
+  .floor_line .tile-empty {
+    cursor: pointer;
   }
 }
 .tile {
